@@ -1,23 +1,51 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Arsenal Match Reminder — GitHub Actions Workflow
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# This workflow runs the reminder bot twice a day on a cron schedule.
+# It spins up a temporary Ubuntu container, installs dependencies,
+# runs index.js with the appropriate mode, then shuts down.
+# There is no persistent server — this is completely free on GitHub Actions.
+#
+# SCHEDULE
+#   - 7:30 AM PST (15:30 UTC) → passes mode=morning to index.js
+#   - 5:00 PM PST (01:00 UTC) → passes mode=evening to index.js
+#
+# NOTE: GitHub Actions cron runs on UTC. PST = UTC-8 (standard time).
+# If clocks are on PDT (summer, UTC-7), adjust cron times by 1 hour:
+#   - 7:30 AM PDT = 14:30 UTC  → change '30 15' to '30 14'
+#   - 5:00 PM PDT = 00:00 UTC  → change '0 1'  to '0 0'
+#
+# SECRETS REQUIRED (set in repo Settings → Secrets and variables → Actions)
+#   - FOOTBALL_API_KEY    → from football-data.org
+#   - DISCORD_WEBHOOK_URL → from your Discord channel's Integrations settings
+#
+# MANUAL TESTING
+#   Go to Actions tab → Arsenal Match Reminder → Run workflow
+#   Select 'test-webhook' to send a message immediately, bypassing time logic.
+# ─────────────────────────────────────────────────────────────────────────────
+
 name: Arsenal Match Reminder
 
 on:
   schedule:
-    # 7:30 AM PST = 15:30 UTC
+    # 7:30 AM PST = 15:30 UTC (standard time / winter)
     - cron: '30 15 * * *'
-    # 5:00 PM PST = 01:00 UTC (next day)
+    # 5:00 PM PST = 01:00 UTC the following day (standard time / winter)
     - cron: '0 1 * * *'
-  # Allows you to trigger a test run manually from the GitHub Actions tab
+
+  # Enables manual runs from the GitHub Actions UI for testing
   workflow_dispatch:
     inputs:
       mode:
-        description: 'Run mode'
+        description: 'Run mode — use test-webhook to send immediately'
         required: true
         default: 'test-webhook'
         type: choice
         options:
-          - test-webhook
-          - morning
-          - evening
+          - test-webhook  # Sends reminder immediately, bypasses date/time logic
+          - morning       # Simulates the 7:30am check
+          - evening       # Simulates the 5:00pm check
 
 jobs:
   send-reminder:
@@ -35,19 +63,26 @@ jobs:
       - name: Install dependencies
         run: npm install
 
+      # Determine whether this is a morning or evening run.
+      # If manually triggered via workflow_dispatch, use the selected input.
+      # If triggered by cron, detect which schedule fired based on the current UTC time.
       - name: Determine run mode
         id: mode
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            # Manual run — use whatever mode was selected in the UI
             echo "mode=${{ inputs.mode }}" >> $GITHUB_OUTPUT
           elif [ "$(date -u +%H:%M)" \> "15:25" ] && [ "$(date -u +%H:%M)" \< "15:35" ]; then
+            # Running near 15:30 UTC → this is the 7:30am PST morning run
             echo "mode=morning" >> $GITHUB_OUTPUT
           else
+            # Otherwise assume this is the 01:00 UTC evening run
             echo "mode=evening" >> $GITHUB_OUTPUT
           fi
 
       - name: Run Arsenal reminder
         run: node index.js ${{ steps.mode.outputs.mode }}
         env:
+          # Secrets are injected here from GitHub repo settings — never hardcode these
           FOOTBALL_API_KEY: ${{ secrets.FOOTBALL_API_KEY }}
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
