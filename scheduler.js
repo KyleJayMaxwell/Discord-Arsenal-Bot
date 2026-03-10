@@ -38,24 +38,12 @@ function getTomorrowPST() {
   return tomorrow.toLocaleDateString('en-CA', { timeZone: 'America/Los_Angeles' });
 }
 
-function getCurrentHourPST() {
-  return parseInt(
-    new Date().toLocaleString('en-US', {
-      hour: 'numeric',
-      hour12: false,
-      timeZone: 'America/Los_Angeles',
-    })
-  );
-}
-
 /**
- * Main hourly check — runs every hour and applies the reminder logic:
- *   - Match today + kickoff at/after 7am PST  → remind at 7am PST
- *   - Match tomorrow + kickoff before 7am PST → remind at 5pm PST
+ * Main check logic — shared between both cron jobs.
+ * type: 'morning' (7:30am) or 'evening' (5:00pm)
  */
-async function hourlyCheck() {
-  const currentHour = getCurrentHourPST();
-  console.log(`⏰ Hourly check running... (Current hour PST: ${currentHour}:00)`);
+async function runCheck(type) {
+  console.log(`⏰ Running ${type} check...`);
 
   try {
     const match = await getUpcomingMatch();
@@ -66,34 +54,33 @@ async function hourlyCheck() {
     const tomorrow = getTomorrowPST();
     const earlyKickoff = isEarlyKickoff(match.utcDate);
 
-    // Determine if we should send a reminder this hour
-    const shouldSendMorning = matchDatePST === today && !earlyKickoff && currentHour === 7;
-    const shouldSendEvening = matchDatePST === tomorrow && earlyKickoff && currentHour === 17;
+    const shouldSendMorning = type === 'morning' && matchDatePST === today && !earlyKickoff;
+    const shouldSendEvening = type === 'evening' && matchDatePST === tomorrow && earlyKickoff;
 
     if (shouldSendMorning || shouldSendEvening) {
-      // Avoid sending duplicate reminders for the same match
       if (sentReminders.has(match.id)) {
         return console.log(`Reminder already sent for match ${match.id}, skipping.`);
       }
-
       await sendMatchReminder(match, new Date(match.utcDate));
       sentReminders.add(match.id);
     } else {
-      console.log('No reminder needed this hour.');
+      console.log('No reminder needed right now.');
     }
   } catch (err) {
-    console.error('Error in hourly check:', err.message);
+    console.error(`Error in ${type} check:`, err.message);
   }
 }
 
 function startScheduler() {
-  // Run at the top of every hour
-  cron.schedule('0 * * * *', hourlyCheck, { timezone: 'America/Los_Angeles' });
+  // 7:30 AM PST daily — same-day games with kickoff at/after 7am
+  cron.schedule('30 7 * * *', () => runCheck('morning'), { timezone: 'America/Los_Angeles' });
+
+  // 5:00 PM PST daily — next-day early kickoff games (before 7am PST)
+  cron.schedule('0 17 * * *', () => runCheck('evening'), { timezone: 'America/Los_Angeles' });
 
   console.log('🤖 Arsenal bot scheduler started!');
-  console.log('   → Checking every hour (PST)');
-  console.log('   → Will remind at 7am for same-day games (kickoff after 7am)');
-  console.log('   → Will remind at 5pm for next-day early games (kickoff before 7am)');
+  console.log('   → Morning reminder: 7:30 AM PST daily');
+  console.log('   → Evening reminder: 5:00 PM PST daily');
 }
 
-module.exports = { startScheduler, hourlyCheck };
+module.exports = { startScheduler, runCheck };

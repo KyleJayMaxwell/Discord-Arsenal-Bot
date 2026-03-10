@@ -1,77 +1,61 @@
-const axios = require("axios");
+const axios = require('axios');
 
 /**
- * Builds a rich Discord embed message for a match reminder.
+ * Sends a match reminder to the Discord channel via webhook.
  */
-function buildMessage(match, isEarlyWarning = false) {
-  const prefix = isEarlyWarning
-    ? "⏰ **Early kickoff tomorrow — heads up!**"
-    : "⚽ **Arsenal play today!**";
+async function sendMatchReminder(match, kickoffPST) {
+  const home = match.homeTeam.name;
+  const away = match.awayTeam.name;
+  const competition = match.competition.name;
 
-  const homeAway = match.isHome ? "🏠 Home" : "✈️ Away";
-  const opponent = match.opponent;
-  const matchup = match.isHome
-    ? `Arsenal vs ${opponent}`
-    : `${opponent} vs Arsenal`;
+  const isHomeGame = match.homeTeam.id === 57;
+  // Use the venue from the API if available, otherwise fall back to the home team's name
+  const venue = isHomeGame
+    ? 'Emirates Stadium'
+    : (match.venue || `${home} Ground`);
 
-  // Discord embed object for a rich card
-  return {
-    username: "Arsenal Match Bot",
-    avatar_url: "https://upload.wikimedia.org/wikipedia/en/5/53/Arsenal_FC.svg",
+  const timeStr = kickoffPST.toLocaleTimeString('en-US', {
+    hour: 'numeric',
+    minute: '2-digit',
+    timeZone: 'America/Los_Angeles',
+    hour12: true,
+  });
+
+  const dateStr = kickoffPST.toLocaleDateString('en-US', {
+    weekday: 'long',
+    month: 'long',
+    day: 'numeric',
+    timeZone: 'America/Los_Angeles',
+  });
+
+  const message = {
+    username: 'Arsenal Match Bot',
+    // PNG version of the Arsenal crest — Discord doesn't support SVG avatars
+    avatar_url: 'https://resources.premierleague.com/premierleague/badges/t3.png',
     embeds: [
       {
-        title: `${prefix}`,
         color: 0xef0107, // Arsenal red
+        title: `⚽ Arsenal Match Reminder`,
+        description: `**${home} vs ${away}**`,
         fields: [
-          {
-            name: "Match",
-            value: `**${matchup}**`,
-            inline: false,
-          },
-          {
-            name: "Competition",
-            value: match.competition,
-            inline: true,
-          },
-          {
-            name: homeAway,
-            value: match.venue,
-            inline: true,
-          },
-          {
-            name: "Kickoff",
-            value: `${match.dateFormatted} at **${match.kickoffFormatted}**`,
-            inline: false,
-          },
+          { name: '🏆 Competition', value: competition, inline: true },
+          { name: '🏟️ Venue', value: venue, inline: true },
+          { name: '📅 Date', value: dateStr, inline: false },
+          { name: '⏰ Kickoff (PST)', value: timeStr, inline: true },
         ],
-        footer: {
-          text: "Come on you Gunners! 🔴⚪",
-        },
-        thumbnail: {
-          url: "https://upload.wikimedia.org/wikipedia/en/5/53/Arsenal_FC.svg",
-        },
+        footer: { text: 'Come on you Gunners! 🔴' },
       },
     ],
   };
-}
 
-/**
- * Posts a match reminder to Discord via webhook.
- */
-async function sendMatchReminder(match, isEarlyWarning = false) {
-  const webhookUrl = process.env.DISCORD_WEBHOOK_URL;
-
-  if (!webhookUrl || webhookUrl.includes("YOUR_WEBHOOK")) {
-    console.error("❌ DISCORD_WEBHOOK_URL is not set in your .env file.");
-    return;
+  try {
+    await axios.post(process.env.DISCORD_WEBHOOK_URL, message);
+    console.log(`✅ Reminder sent for: ${home} vs ${away}`);
+  } catch (err) {
+    console.error('❌ Discord error status:', err.response?.status);
+    console.error('❌ Discord error body:', JSON.stringify(err.response?.data, null, 2));
+    throw err;
   }
-
-  const payload = buildMessage(match, isEarlyWarning);
-
-  await axios.post(webhookUrl, payload);
-  console.log(
-    `✅ Reminder sent for ${match.homeTeam} vs ${match.awayTeam} (${match.kickoffFormatted})`
-  );
 }
 
 module.exports = { sendMatchReminder };
