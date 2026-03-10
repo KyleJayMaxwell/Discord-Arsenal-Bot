@@ -25,13 +25,12 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
-          node-version: '20'
-          cache: 'npm'
+          node-version: '24'
 
       - name: Install dependencies
         run: npm install
@@ -39,13 +38,10 @@ jobs:
       - name: Determine run mode
         id: mode
         run: |
-          # If manually triggered, use the selected mode
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "mode=${{ inputs.mode }}" >> $GITHUB_OUTPUT
-          # 15:30 UTC = morning run
           elif [ "$(date -u +%H:%M)" \> "15:25" ] && [ "$(date -u +%H:%M)" \< "15:35" ]; then
             echo "mode=morning" >> $GITHUB_OUTPUT
-          # 01:00 UTC = evening run
           else
             echo "mode=evening" >> $GITHUB_OUTPUT
           fi
