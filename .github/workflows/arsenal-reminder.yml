@@ -1,0 +1,57 @@
+name: Arsenal Match Reminder
+
+on:
+  schedule:
+    # 7:30 AM PST = 15:30 UTC
+    - cron: '30 15 * * *'
+    # 5:00 PM PST = 01:00 UTC (next day)
+    - cron: '0 1 * * *'
+  # Allows you to trigger a test run manually from the GitHub Actions tab
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Run mode'
+        required: true
+        default: 'test-webhook'
+        type: choice
+        options:
+          - test-webhook
+          - morning
+          - evening
+
+jobs:
+  send-reminder:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Determine run mode
+        id: mode
+        run: |
+          # If manually triggered, use the selected mode
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "mode=${{ inputs.mode }}" >> $GITHUB_OUTPUT
+          # 15:30 UTC = morning run
+          elif [ "$(date -u +%H:%M)" \> "15:25" ] && [ "$(date -u +%H:%M)" \< "15:35" ]; then
+            echo "mode=morning" >> $GITHUB_OUTPUT
+          # 01:00 UTC = evening run
+          else
+            echo "mode=evening" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Run Arsenal reminder
+        run: node index.js ${{ steps.mode.outputs.mode }}
+        env:
+          FOOTBALL_API_KEY: ${{ secrets.FOOTBALL_API_KEY }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}

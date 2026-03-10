@@ -4,16 +4,13 @@
   "description": "Arsenal FC match reminder Discord webhook bot",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js"
+    "start": "node index.js",
+    "test-webhook": "node index.js test-webhook",
+    "test-morning": "node index.js morning",
+    "test-evening": "node index.js evening"
   },
   "dependencies": {
     "axios": "^1.6.0",
-    "dotenv": "^16.0.0",
-    "node-cron": "^3.0.0"
-  },
-  "devDependencies": {},
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "type": "commonjs"
+    "dotenv": "^16.0.0"
+  }
 }
