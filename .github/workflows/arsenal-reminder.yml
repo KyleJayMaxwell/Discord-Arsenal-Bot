@@ -24,10 +24,13 @@
 # SECRETS REQUIRED (repo Settings → Secrets and variables → Actions → Secrets)
 #   FOOTBALL_API_KEY    → from football-data.org
 #   DISCORD_WEBHOOK_URL → from your Discord channel's Integrations settings
+#   VARIABLES_TOKEN     → fine-grained PAT with Variables: read/write on this repo
 #
 # PERMISSIONS REQUIRED
-#   The workflow needs write access to repository variables.
-#   This is granted via the `permissions` block below using GITHUB_TOKEN.
+#   GITHUB_TOKEN cannot write repository Variables — a fine-grained PAT is required.
+#   Create one at GitHub → Settings → Developer settings → Personal access tokens
+#   → Fine-grained tokens. Scope it to this repo, Variables: read/write.
+#   Store it as a secret named VARIABLES_TOKEN.
 #
 # MANUAL TESTING
 #   Actions tab → Arsenal Match Reminder → Run workflow → test-webhook
@@ -51,7 +54,7 @@ on:
           - test-webhook  # Send immediately, no scheduling logic
           - normal        # Run normal scheduling logic right now
 
-# Grant the workflow permission to read/write repository variables
+# Grant the workflow permission to read contents and run actions
 permissions:
   contents: read
   actions: write
@@ -75,7 +78,7 @@ jobs:
         env:
           FOOTBALL_API_KEY: ${{ secrets.FOOTBALL_API_KEY }}
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-          # GITHUB_TOKEN is auto-provided — used to read/write repo variables
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # GITHUB_TOKEN cannot write Variables — requires a fine-grained PAT with Variables: read/write
+          GH_TOKEN: ${{ secrets.VARIABLES_TOKEN }}
           # GITHUB_REPOSITORY is auto-provided — e.g. "yourusername/arsenal-bot"
           GITHUB_REPOSITORY: ${{ github.repository }}
