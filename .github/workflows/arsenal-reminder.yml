@@ -2,61 +2,80 @@
 # Arsenal Match Reminder — GitHub Actions Workflow
 # ─────────────────────────────────────────────────────────────────────────────
 #
-# Runs every 30 minutes. index.js handles all the timing logic internally
-# using 'America/Los_Angeles' time — DST is handled automatically, no
-# manual UTC offset changes are ever needed in this file.
+# Runs every 30 minutes. index.js handles all logic internally:
 #
-# HOW IT WORKS
-#   On match days:  sends a reminder 30 mins before kickoff (min 7:00 AM)
-#   On non-match days: sends a "no match today" message with a countdown at 7:00 AM
+#   3am window  → calls football API, stores schedule in GitHub Variables
+#   Other runs  → reads schedule, sends message if it's time, marks sent
+#
+# State is persisted via GitHub Actions Variables (not secrets):
+#   SCHEDULE_DATE       — date the schedule was built for (YYYY-MM-DD)
+#   SCHEDULE_SEND_TIME  — time to send the message (HH:MM in LA time)
+#   SCHEDULE_HAS_MATCH  — "true" or "false"
+#   SCHEDULE_SENT       — "true" once the message has been sent today
+#
+# These variables are created automatically on first run.
+#
+# SEND TIME RULES
+#   Game today, kickoff at/after 7:30am → send at 7:00am
+#   Game today, kickoff before 7:30am   → send 30 mins before kickoff
+#   No game today                       → send at 6:30am
+#   All times use America/Los_Angeles (PST/PDT auto-handled)
 #
 # SECRETS REQUIRED (repo Settings → Secrets and variables → Actions → Secrets)
 #   FOOTBALL_API_KEY    → from football-data.org
 #   DISCORD_WEBHOOK_URL → from your Discord channel's Integrations settings
 #
+# PERMISSIONS REQUIRED
+#   The workflow needs write access to repository variables.
+#   This is granted via the `permissions` block below using GITHUB_TOKEN.
+#
 # MANUAL TESTING
 #   Actions tab → Arsenal Match Reminder → Run workflow → test-webhook
-#   Sends a message immediately regardless of time or match schedule.
 # ─────────────────────────────────────────────────────────────────────────────
 
 name: Arsenal Match Reminder
 
 on:
-  # Run every 30 minutes so we can catch the exact reminder window.
-  # All timing decisions are made inside index.js, not here.
   schedule:
+    # Every 30 minutes — index.js decides what to do based on current LA time
     - cron: '0,30 * * * *'
 
-  # Manual trigger for testing from the GitHub Actions UI
   workflow_dispatch:
     inputs:
       mode:
-        description: 'test-webhook sends immediately, ignoring all time/match logic'
+        description: 'Run mode'
         required: true
         default: 'test-webhook'
         type: choice
         options:
-          - test-webhook
+          - test-webhook  # Send immediately, no scheduling logic
+          - normal        # Run normal scheduling logic right now
+
+# Grant the workflow permission to read/write repository variables
+permissions:
+  contents: read
+  actions: write
 
 jobs:
-  send-reminder:
+  remind:
+    name: Arsenal Reminder
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v5
+      - uses: actions/checkout@v5
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: '24'
 
-      - name: Install dependencies
-        run: npm install
+      - run: npm install
 
       - name: Run Arsenal reminder
-        # Pass 'test-webhook' for manual runs, nothing for scheduled runs
-        run: node index.js ${{ github.event_name == 'workflow_dispatch' && inputs.mode || '' }}
+        run: node index.js ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'test-webhook' && 'test-webhook' || '' }}
         env:
           FOOTBALL_API_KEY: ${{ secrets.FOOTBALL_API_KEY }}
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          # GITHUB_TOKEN is auto-provided — used to read/write repo variables
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # GITHUB_REPOSITORY is auto-provided — e.g. "yourusername/arsenal-bot"
+          GITHUB_REPOSITORY: ${{ github.repository }}
