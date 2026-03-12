@@ -177,22 +177,31 @@ async function getVariable(name) {
       { headers: { Authorization: `Bearer ${process.env.GH_TOKEN}`, 'X-GitHub-Api-Version': '2022-11-28' } }
     );
     return res.data.value;
-  } catch {
-    return null; // Variable doesn't exist yet
+  } catch (err) {
+    if (err.response?.status === 404) return null; // Variable doesn't exist yet — expected on first run
+    throw err; // Surface real errors (bad token, network failure, etc.)
   }
 }
 
 async function setVariable(name, value) {
-  const existing = await getVariable(name);
-  const method   = existing !== null ? 'PATCH' : 'POST';
-  const url      = existing !== null
-    ? `${GH_API}/repos/${process.env.GITHUB_REPOSITORY}/actions/variables/${name}`
-    : `${GH_API}/repos/${process.env.GITHUB_REPOSITORY}/actions/variables`;
+  const headers = { Authorization: `Bearer ${process.env.GH_TOKEN}`, 'X-GitHub-Api-Version': '2022-11-28' };
+  const body    = { name, value: String(value) };
 
-  await axios({ method, url,
-    headers: { Authorization: `Bearer ${process.env.GH_TOKEN}`, 'X-GitHub-Api-Version': '2022-11-28' },
-    data: { name, value: String(value) },
-  });
+  try {
+    // Always try PATCH first (variable already exists)
+    await axios.patch(
+      `${GH_API}/repos/${process.env.GITHUB_REPOSITORY}/actions/variables/${name}`,
+      body, { headers }
+    );
+  } catch (err) {
+    if (err.response?.status === 404) {
+      // Variable doesn't exist yet — create it
+      await axios.post(
+        `${GH_API}/repos/${process.env.GITHUB_REPOSITORY}/actions/variables`,
+        body, { headers }
+      );
+    } else throw err;
+  }
 }
 
 // ─────────────────────────────────────────────────────
@@ -257,7 +266,17 @@ async function run() {
     // Store the full match data now so send time requires zero API calls.
     // For no-match days we store the next upcoming fixture for the countdown.
     const nextMatch = hasMatch ? null : await getNextMatch();
-    const matchData = hasMatch ? match : nextMatch;
+    const rawMatch  = hasMatch ? match : nextMatch;
+
+    // Only store the fields discord.js actually uses — keeps the payload
+    // small and well under GitHub Variables' 48KB limit
+    const matchData = rawMatch ? {
+      utcDate:     rawMatch.utcDate,
+      venue:       rawMatch.venue,
+      competition: { name: rawMatch.competition.name },
+      homeTeam:    { id: rawMatch.homeTeam.id, name: rawMatch.homeTeam.name },
+      awayTeam:    { id: rawMatch.awayTeam.id, name: rawMatch.awayTeam.name },
+    } : null;
     const matchJSON = matchData ? JSON.stringify(matchData) : 'null';
 
     // Persist everything to GitHub Variables for subsequent runs today
