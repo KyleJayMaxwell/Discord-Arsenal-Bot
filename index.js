@@ -224,6 +224,7 @@ async function run() {
   const scheduleSendTime = await getVariable('SCHEDULE_SEND_TIME');
   const scheduleSent     = await getVariable('SCHEDULE_SENT');
   const scheduleHasMatch = await getVariable('SCHEDULE_HAS_MATCH');
+  // SCHEDULE_MATCH_DATA is read later only if we're in the send window
 
   const scheduleIsStale  = scheduleDate !== today;
 
@@ -253,13 +254,20 @@ async function run() {
       console.log(`💤 No match today. No-match message will send at ${fmtTime(sendTime)} LA time`);
     }
 
-    // Persist schedule to GitHub Variables for subsequent runs today
+    // Store the full match data now so send time requires zero API calls.
+    // For no-match days we store the next upcoming fixture for the countdown.
+    const nextMatch = hasMatch ? null : await getNextMatch();
+    const matchData = hasMatch ? match : nextMatch;
+    const matchJSON = matchData ? JSON.stringify(matchData) : 'null';
+
+    // Persist everything to GitHub Variables for subsequent runs today
     await setVariable('SCHEDULE_DATE',       today);
     await setVariable('SCHEDULE_SEND_TIME',  fmtTime(sendTime));
     await setVariable('SCHEDULE_HAS_MATCH',  String(hasMatch));
+    await setVariable('SCHEDULE_MATCH_DATA', matchJSON);
     await setVariable('SCHEDULE_SENT',       'false');
 
-    console.log('✅ Schedule saved to GitHub Variables.');
+    console.log('✅ Schedule saved to GitHub Variables. No further API calls needed today.');
     return; // Don't send yet — let the next run handle it at the right time
   }
 
@@ -284,19 +292,23 @@ async function run() {
   // ── Send the message ──────────────────────────────────────────────────────
   console.log(`⏰ Within send window — sending message!`);
 
+  // Use the match data stored at 3am — no API call needed
+  const scheduleMatchData = await getVariable('SCHEDULE_MATCH_DATA');
+  const storedMatch = scheduleMatchData && scheduleMatchData !== 'null'
+    ? JSON.parse(scheduleMatchData)
+    : null;
+
   if (scheduleHasMatch === 'true') {
-    const match = await getUpcomingMatch();
-    if (match) {
-      await sendMatchReminder(match, new Date(match.utcDate));
+    if (storedMatch) {
+      await sendMatchReminder(storedMatch, new Date(storedMatch.utcDate));
     } else {
-      // Fallback: match was scheduled at 3am but API no longer shows it
-      console.log('⚠️  Match was scheduled but no longer in API. Sending no-match message.');
-      const nextMatch = await getNextMatch();
-      await sendNoMatchMessage(nextMatch);
+      // Shouldn't happen, but fall back gracefully if data is missing
+      console.log('⚠️  Match data missing from variables. Exiting without sending.');
+      return;
     }
   } else {
-    const nextMatch = await getNextMatch();
-    await sendNoMatchMessage(nextMatch);
+    // storedMatch here is the next upcoming fixture for the countdown
+    await sendNoMatchMessage(storedMatch);
   }
 
   // Mark as sent so no further runs today will fire
