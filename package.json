@@ -1,13 +1,11 @@
 {
   "name": "arsenal-bot",
   "version": "1.0.0",
-  "description": "Arsenal FC match reminder Discord webhook bot",
+  "description": "Arsenal FC match reminder bot — posts to Discord via webhook, runs on GitHub Actions",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "test-webhook": "node index.js test-webhook",
-    "test-morning": "node index.js morning",
-    "test-evening": "node index.js evening"
+    "test-webhook": "node index.js test-webhook"
   },
   "dependencies": {
     "axios": "^1.6.0",

@@ -1,8 +1,7 @@
 /**
  * fixtures.js
  *
- * Responsible for fetching Arsenal's upcoming match schedule
- * from the football-data.org API.
+ * Fetches Arsenal's match schedule from the football-data.org API.
  *
  * API docs: https://www.football-data.org/documentation/quickstart
  * Arsenal's team ID in the API is 57.
@@ -17,13 +16,35 @@ const ARSENAL_TEAM_ID = 57;
 const API_BASE = 'https://api.football-data.org/v4';
 
 /**
- * Fetches the next scheduled Arsenal match within the next 2 days.
+ * Shared helper — fetches Arsenal matches between two dates.
  *
- * We look 2 days ahead so the evening check (5pm the day before)
- * can detect a match scheduled for the following day.
+ * @param {string} dateFrom - YYYY-MM-DD
+ * @param {string} dateTo   - YYYY-MM-DD
+ * @returns {Array}         - Array of match objects, may be empty
+ */
+async function fetchMatches(dateFrom, dateTo) {
+  const response = await axios.get(
+    `${API_BASE}/teams/${ARSENAL_TEAM_ID}/matches`,
+    {
+      headers: {
+        // Stored in .env locally, GitHub Secrets in production
+        'X-Auth-Token': process.env.FOOTBALL_API_KEY,
+      },
+      params: {
+        status: 'SCHEDULED',
+        dateFrom,
+        dateTo,
+      },
+    }
+  );
+  return response.data.matches || [];
+}
+
+/**
+ * Returns today's Arsenal match, or null if there isn't one.
  *
- * Returns the match object if one is found, or null if Arsenal
- * aren't playing in the next 2 days.
+ * Only looks at today's date — the new reminder logic only needs
+ * to know if Arsenal play today, not days ahead.
  *
  * Example match object shape (abbreviated):
  * {
@@ -36,36 +57,33 @@ const API_BASE = 'https://api.football-data.org/v4';
  * }
  */
 async function getUpcomingMatch() {
-  const today = new Date();
-  const twoDaysLater = new Date(today);
-  twoDaysLater.setDate(today.getDate() + 2);
+  const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
 
-  // Format dates as YYYY-MM-DD for the API query params
-  const dateFrom = today.toISOString().split('T')[0];
-  const dateTo = twoDaysLater.toISOString().split('T')[0];
+  const matches = await fetchMatches(today, today);
 
-  const response = await axios.get(
-    `${API_BASE}/teams/${ARSENAL_TEAM_ID}/matches`,
-    {
-      headers: {
-        // API key is stored in .env locally and as a GitHub Secret in production
-        'X-Auth-Token': process.env.FOOTBALL_API_KEY,
-      },
-      params: {
-        status: 'SCHEDULED', // Only fetch upcoming matches, not past results
-        dateFrom,
-        dateTo,
-      },
-    }
-  );
-
-  const matches = response.data.matches;
-
-  // No matches in the next 2 days — return null so the caller can handle gracefully
-  if (!matches || matches.length === 0) return null;
-
-  // Matches are returned in chronological order — return the soonest one
-  return matches[0];
+  // Return today's match, or null if Arsenal aren't playing today
+  return matches.length > 0 ? matches[0] : null;
 }
 
-module.exports = { getUpcomingMatch };
+/**
+ * Returns the next scheduled Arsenal match within the next 60 days.
+ *
+ * Used to show a countdown on days when Arsenal aren't playing.
+ * 60 days is enough to cover any international break or fixture gap.
+ *
+ * Returns null if nothing is found (very unlikely mid-season).
+ */
+async function getNextMatch() {
+  const today = new Date();
+  const sixtyDaysLater = new Date(today);
+  sixtyDaysLater.setDate(today.getDate() + 60);
+
+  const dateFrom = today.toISOString().split('T')[0];
+  const dateTo   = sixtyDaysLater.toISOString().split('T')[0];
+
+  const matches = await fetchMatches(dateFrom, dateTo);
+
+  return matches.length > 0 ? matches[0] : null;
+}
+
+module.exports = { getUpcomingMatch, getNextMatch };
