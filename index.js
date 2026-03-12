@@ -46,8 +46,8 @@
  * ─────────────────────────────────────────────────────
  *   FOOTBALL_API_KEY      → football-data.org API key
  *   DISCORD_WEBHOOK_URL   → Discord channel webhook URL
- *   GH_TOKEN              → GitHub token with repo variable write access
- *                           (use the auto-provided GITHUB_TOKEN in the workflow)
+ *   GH_TOKEN              → Fine-grained PAT with Variables: read/write on this repo
+ *                           (store as VARIABLES_TOKEN secret in repo settings)
  *   GITHUB_REPOSITORY     → auto-provided by GitHub Actions (owner/repo)
  *
  * ─────────────────────────────────────────────────────
@@ -76,13 +76,23 @@ const WINDOW_MINS          = 29;   // Tolerance for GitHub Actions delays
 
 // ─────────────────────────────────────────────────────
 // Environment variable validation
+// Catches missing/unconfigured vars before any API calls are made
 // ─────────────────────────────────────────────────────
-const required = ['FOOTBALL_API_KEY', 'DISCORD_WEBHOOK_URL'];
+const required = ['FOOTBALL_API_KEY', 'DISCORD_WEBHOOK_URL', 'GH_TOKEN', 'GITHUB_REPOSITORY'];
 for (const key of required) {
   if (!process.env[key] || process.env[key].includes('your_')) {
     console.error(`❌ Missing or unconfigured environment variable: ${key}`);
-    console.error('   → Locally: copy .env.example to .env and fill in your values');
-    console.error('   → Production: add the secret in GitHub repo Settings → Secrets');
+    if (key === 'GH_TOKEN') {
+      console.error('   → Create a fine-grained PAT with Variables: read/write on this repo');
+      console.error('   → Store it as VARIABLES_TOKEN in repo Settings → Secrets → Actions');
+      console.error('   → Ensure the workflow passes it as GH_TOKEN in the env block');
+    } else if (key === 'GITHUB_REPOSITORY') {
+      console.error('   → This is auto-provided by GitHub Actions');
+      console.error('   → Ensure the workflow passes it as GITHUB_REPOSITORY: ${{ github.repository }}');
+    } else {
+      console.error('   → Locally: copy .env.example to .env and fill in your values');
+      console.error('   → Production: add the secret in GitHub repo Settings → Secrets');
+    }
     process.exit(1);
   }
 }
@@ -165,7 +175,7 @@ function isWithinWindow(sendTimeStr) {
 // Reads and writes repository variables to persist schedule state
 // across runs. Variables are stored under the repo's Actions variables.
 //
-// Required: GH_TOKEN env var with repo write access
+// Required: GH_TOKEN env var — fine-grained PAT with Variables: read/write
 //           GITHUB_REPOSITORY env var (auto-set by Actions: "owner/repo")
 // ─────────────────────────────────────────────────────
 const GH_API = 'https://api.github.com';
@@ -179,7 +189,13 @@ async function getVariable(name) {
     return res.data.value;
   } catch (err) {
     if (err.response?.status === 404) return null; // Variable doesn't exist yet — expected on first run
-    throw err; // Surface real errors (bad token, network failure, etc.)
+    if (err.response?.status === 403) {
+      throw new Error(
+        `403 reading variable "${name}" — GH_TOKEN lacks permission. ` +
+        `Ensure VARIABLES_TOKEN is a fine-grained PAT with Variables: read/write on this repo.`
+      );
+    }
+    throw new Error(`Failed to read variable "${name}": ${err.message}`);
   }
 }
 
@@ -196,11 +212,28 @@ async function setVariable(name, value) {
   } catch (err) {
     if (err.response?.status === 404) {
       // Variable doesn't exist yet — create it
-      await axios.post(
-        `${GH_API}/repos/${process.env.GITHUB_REPOSITORY}/actions/variables`,
-        body, { headers }
+      try {
+        await axios.post(
+          `${GH_API}/repos/${process.env.GITHUB_REPOSITORY}/actions/variables`,
+          body, { headers }
+        );
+      } catch (postErr) {
+        if (postErr.response?.status === 403) {
+          throw new Error(
+            `403 creating variable "${name}" — GH_TOKEN lacks permission. ` +
+            `Ensure VARIABLES_TOKEN is a fine-grained PAT with Variables: read/write on this repo.`
+          );
+        }
+        throw new Error(`Failed to create variable "${name}": ${postErr.message}`);
+      }
+    } else if (err.response?.status === 403) {
+      throw new Error(
+        `403 updating variable "${name}" — GH_TOKEN lacks permission. ` +
+        `Ensure VARIABLES_TOKEN is a fine-grained PAT with Variables: read/write on this repo.`
       );
-    } else throw err;
+    } else {
+      throw new Error(`Failed to update variable "${name}": ${err.message}`);
+    }
   }
 }
 
