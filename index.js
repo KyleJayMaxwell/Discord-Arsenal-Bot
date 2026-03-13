@@ -3,13 +3,15 @@
  *
  * Arsenal Match Reminder — entry point.
  *
- * Runs every 30 minutes via GitHub Actions. Uses two environment variables
+ * Runs every 30 minutes via GitHub Actions. Uses environment variables
  * stored as GitHub Actions Variables (not secrets) to persist state across
  * runs within the same day:
  *
- *   SCHEDULE_SEND_TIME  — "HH:MM" string set at 3am, e.g. "07:00" or "06:30"
- *   SCHEDULE_SENT       — "true" once the message has been sent today
  *   SCHEDULE_DATE       — "YYYY-MM-DD" the date the schedule was built for
+ *   SCHEDULE_SEND_TIME  — "H:MM" earliest time to send the message (LA time)
+ *   SCHEDULE_HAS_MATCH  — "true" or "false"
+ *   SCHEDULE_MATCH_DATA — slimmed match object as JSON
+ *   SCHEDULE_SENT       — "true" once the message has been sent today
  *
  * These are written back via the GitHub API after each relevant run.
  *
@@ -18,8 +20,9 @@
  * ─────────────────────────────────────────────────────
  *
  *   Every 30 min run:
- *   ├── Is it the 3am window AND schedule is stale (not from today)?
+ *   ├── Is schedule stale (not from today)?
  *   │   └── YES → Call football API, calculate send time, save to GitHub vars
+ *   │           → Then fall through and check send window immediately
  *   ├── Is SCHEDULE_SENT already "true" for today?
  *   │   └── YES → Exit (message already sent today)
  *   └── Is current time within the send window?
@@ -29,25 +32,30 @@
  * ─────────────────────────────────────────────────────
  * SEND TIME RULES
  * ─────────────────────────────────────────────────────
- *   Game today, kickoff at/after 7:30am → send at 7:00am
- *   Game today, kickoff before 7:30am   → send 30 mins before kickoff
- *   No game today                       → send at 6:30am
+ *   Match today, kickoff at/after 7:30am → send between 6:30am and 7:30am
+ *   Match today, kickoff before 7:30am   → send from 60 mins before kickoff,
+ *                                          window never closes (sends even mid-game)
+ *   No match today                       → send at 6:30am (29-min window)
  *
- * A 29-minute buffer handles GitHub Actions scheduling delays.
+ * ─────────────────────────────────────────────────────
+ * SCHEDULE BUILD
+ * ─────────────────────────────────────────────────────
+ *   Built on the first run of each day, regardless of time.
+ *   This handles GitHub Actions silently dropping scheduled runs.
  *
  * ─────────────────────────────────────────────────────
  * CLI USAGE
  * ─────────────────────────────────────────────────────
- *   node index.js          → Normal scheduled run
+ *   node index.js              → Normal scheduled run
  *   node index.js test-webhook → Bypass all logic, send immediately
  *
  * ─────────────────────────────────────────────────────
- * REQUIRED ENV VARS (GitHub Secrets)
+ * REQUIRED ENV VARS
  * ─────────────────────────────────────────────────────
- *   FOOTBALL_API_KEY      → football-data.org API key
- *   DISCORD_WEBHOOK_URL   → Discord channel webhook URL
+ *   FOOTBALL_API_KEY      → football-data.org API key (GitHub Secret)
+ *   DISCORD_WEBHOOK_URL   → Discord channel webhook URL (GitHub Secret)
  *   GH_TOKEN              → Fine-grained PAT with Variables: read/write on this repo
- *                           (store as VARIABLES_TOKEN secret in repo settings)
+ *                           (store as VARIABLES_TOKEN secret, passed as GH_TOKEN)
  *   GITHUB_REPOSITORY     → auto-provided by GitHub Actions (owner/repo)
  *
  * ─────────────────────────────────────────────────────
@@ -63,16 +71,13 @@ const { sendMatchReminder, sendNoMatchMessage } = require('./discord');
 // ─────────────────────────────────────────────────────
 // Timing configuration (all LA / America/Los_Angeles time)
 // ─────────────────────────────────────────────────────
-const EARLIEST_SEND_HOUR   = 7;    // Match reminders never fire before 7:00am
-const EARLIEST_SEND_MINUTE = 0;
-const LATE_KICKOFF_HOUR    = 7;    // Kickoffs at/after 7:30am → remind at 7:00am
-const LATE_KICKOFF_MINUTE  = 30;
-const REMINDER_OFFSET_MINS = 30;   // Mins before kickoff for early games
-const NO_MATCH_SEND_HOUR   = 6;    // No-match message time
-const NO_MATCH_SEND_MINUTE = 30;
-const CHECK_HOUR           = 3;    // When to call the API and set the schedule (3am)
-const CHECK_MINUTE         = 0;
-const WINDOW_MINS          = 29;   // Tolerance for GitHub Actions delays
+const LATE_KICKOFF_HOUR         = 7;    // Kickoffs at/after 7:30am → use fixed morning window
+const LATE_KICKOFF_MINUTE       = 30;
+const LATE_SEND_WINDOW_START    = { hour: 6, minute: 30 }; // Start of morning send window
+const LATE_SEND_WINDOW_END      = { hour: 7, minute: 30 }; // End of morning send window
+const EARLY_KICKOFF_OFFSET_MINS = 60;  // Open send window this many mins before early kickoffs
+const NO_MATCH_SEND_HOUR        = 6;   // No-match message sends from this time onwards, no upper bound
+const NO_MATCH_SEND_MINUTE      = 30;
 
 // ─────────────────────────────────────────────────────
 // Environment variable validation
@@ -123,21 +128,16 @@ function toMins({ hour, minute }) {
   return hour * 60 + minute;
 }
 
-/** Converts total minutes since midnight to { hour, minute }. */
-function fromMins(totalMins) {
-  return { hour: Math.floor(totalMins / 60), minute: totalMins % 60 };
-}
-
 /** Formats { hour, minute } as "H:MM" for logging. */
 function fmtTime({ hour, minute }) {
   return `${hour}:${String(minute).padStart(2, '0')}`;
 }
 
 /**
- * Calculates what time the reminder should fire for a given kickoff.
+ * Calculates the earliest time the send window opens for a given kickoff.
  *
- *   Kickoff at/after 7:30am → send at 7:00am
- *   Kickoff before 7:30am   → send 30 mins before kickoff
+ *   Kickoff at/after 7:30am → window opens at 6:30am
+ *   Kickoff before 7:30am   → window opens 60 mins before kickoff
  */
 function calcSendTime(kickoffUTC) {
   const kickoff = new Date(kickoffUTC);
@@ -150,24 +150,56 @@ function calcSendTime(kickoffUTC) {
 
   const kickoffMins   = kickoffHour * 60 + kickoffMinute;
   const lateThreshold = LATE_KICKOFF_HOUR * 60 + LATE_KICKOFF_MINUTE;
-  const earliestMins  = EARLIEST_SEND_HOUR * 60 + EARLIEST_SEND_MINUTE;
 
   if (kickoffMins >= lateThreshold) {
-    return fromMins(earliestMins); // 7:00am
+    return { hour: LATE_SEND_WINDOW_START.hour, minute: LATE_SEND_WINDOW_START.minute };
   } else {
-    return fromMins(kickoffMins - REMINDER_OFFSET_MINS); // 30 mins before kickoff
+    const openMins = kickoffMins - EARLY_KICKOFF_OFFSET_MINS;
+    return { hour: Math.floor(openMins / 60), minute: openMins % 60 };
   }
 }
 
 /**
- * Returns true if the current LA time falls within the send window.
- * Window = [sendTime, sendTime + WINDOW_MINS)
+ * Returns true if it's time to send the message.
+ *
+ * Late kickoff (at/after 7:30am):
+ *   Window = 6:30am–7:30am. Outside this range → don't send.
+ *
+ * Early kickoff (before 7:30am):
+ *   Window opens 60 mins before kickoff and never closes.
+ *   Sends even if the game is already underway.
+ *
+ * No match:
+ *   Window = 6:30am to 6:30am + 29 mins.
  */
-function isWithinWindow(sendTimeStr) {
-  const [sendHour, sendMinute] = sendTimeStr.split(':').map(Number);
+function isWithinWindow(sendTimeStr, hasMatch, kickoffUTC) {
   const currentMins = toMins(getCurrentLATime());
-  const sendMins    = toMins({ hour: sendHour, minute: sendMinute });
-  return currentMins >= sendMins && currentMins < sendMins + WINDOW_MINS;
+  const [sendHour, sendMinute] = sendTimeStr.split(':').map(Number);
+  const sendMins = toMins({ hour: sendHour, minute: sendMinute });
+
+  if (!hasMatch) {
+    // No-match message: send any time from 6:30am onwards — no upper bound
+    return currentMins >= sendMins;
+  }
+
+  const kickoff = new Date(kickoffUTC);
+  const kickoffHour = parseInt(
+    kickoff.toLocaleString('en-US', { hour: 'numeric', hour12: false, timeZone: 'America/Los_Angeles' })
+  );
+  const kickoffMinute = parseInt(
+    kickoff.toLocaleString('en-US', { minute: '2-digit', timeZone: 'America/Los_Angeles' })
+  );
+  const kickoffMins   = kickoffHour * 60 + kickoffMinute;
+  const lateThreshold = LATE_KICKOFF_HOUR * 60 + LATE_KICKOFF_MINUTE;
+
+  if (kickoffMins >= lateThreshold) {
+    // Late kickoff: hard window 6:30am–7:30am
+    const windowEnd = toMins(LATE_SEND_WINDOW_END);
+    return currentMins >= sendMins && currentMins < windowEnd;
+  } else {
+    // Early kickoff: open-ended — send from 60 mins before kickoff, never closes
+    return currentMins >= sendMins;
+  }
 }
 
 // ─────────────────────────────────────────────────────
@@ -188,7 +220,7 @@ async function getVariable(name) {
     );
     return res.data.value;
   } catch (err) {
-    if (err.response?.status === 404) return null; // Variable doesn't exist yet — expected on first run
+    if (err.response?.status === 404) return null;
     if (err.response?.status === 403) {
       throw new Error(
         `403 reading variable "${name}" — GH_TOKEN lacks permission. ` +
@@ -204,14 +236,12 @@ async function setVariable(name, value) {
   const body    = { name, value: String(value) };
 
   try {
-    // Always try PATCH first (variable already exists)
     await axios.patch(
       `${GH_API}/repos/${process.env.GITHUB_REPOSITORY}/actions/variables/${name}`,
       body, { headers }
     );
   } catch (err) {
     if (err.response?.status === 404) {
-      // Variable doesn't exist yet — create it
       try {
         await axios.post(
           `${GH_API}/repos/${process.env.GITHUB_REPOSITORY}/actions/variables`,
@@ -262,23 +292,18 @@ async function run() {
   }
 
   // ── Read today's schedule from GitHub Variables ───────────────────────────
-  const scheduleDate     = await getVariable('SCHEDULE_DATE');
-  const scheduleSendTime = await getVariable('SCHEDULE_SEND_TIME');
-  const scheduleSent     = await getVariable('SCHEDULE_SENT');
-  const scheduleHasMatch = await getVariable('SCHEDULE_HAS_MATCH');
-  // SCHEDULE_MATCH_DATA is read later only if we're in the send window
+  let scheduleDate     = await getVariable('SCHEDULE_DATE');
+  let scheduleSendTime = await getVariable('SCHEDULE_SEND_TIME');
+  let scheduleSent     = await getVariable('SCHEDULE_SENT');
+  let scheduleHasMatch = await getVariable('SCHEDULE_HAS_MATCH');
 
-  const scheduleIsStale  = scheduleDate !== today;
+  const scheduleIsStale = scheduleDate !== today;
 
   console.log(`📋 Schedule: date=${scheduleDate}, sendTime=${scheduleSendTime}, sent=${scheduleSent}, hasMatch=${scheduleHasMatch}, stale=${scheduleIsStale}`);
 
-  // ── 3am check window: refresh the schedule if it's stale ──────────────────
-  const currentMins  = toMins({ hour, minute });
-  const checkMins    = toMins({ hour: CHECK_HOUR, minute: CHECK_MINUTE });
-  const inCheckWindow = currentMins >= checkMins && currentMins < checkMins + WINDOW_MINS;
-
-  if (scheduleIsStale && inCheckWindow) {
-    console.log('🔍 3am window — fetching today\'s fixtures and setting schedule...');
+  // ── Build schedule on first run of the day (any time) ────────────────────
+  if (scheduleIsStale) {
+    console.log('🔍 Schedule is stale — fetching today\'s fixtures and building schedule...');
 
     const match = await getUpcomingMatch();
 
@@ -289,20 +314,16 @@ async function run() {
       sendTime = calcSendTime(match.utcDate);
       hasMatch = true;
       console.log(`📅 Arsenal play today: ${match.homeTeam.name} vs ${match.awayTeam.name}`);
-      console.log(`⏰ Reminder will send at ${fmtTime(sendTime)} LA time`);
+      console.log(`⏰ Send window opens at ${fmtTime(sendTime)} LA time`);
     } else {
       sendTime = { hour: NO_MATCH_SEND_HOUR, minute: NO_MATCH_SEND_MINUTE };
       hasMatch = false;
       console.log(`💤 No match today. No-match message will send at ${fmtTime(sendTime)} LA time`);
     }
 
-    // Store the full match data now so send time requires zero API calls.
-    // For no-match days we store the next upcoming fixture for the countdown.
     const nextMatch = hasMatch ? null : await getNextMatch();
     const rawMatch  = hasMatch ? match : nextMatch;
 
-    // Only store the fields discord.js actually uses — keeps the payload
-    // small and well under GitHub Variables' 48KB limit
     const matchData = rawMatch ? {
       utcDate:     rawMatch.utcDate,
       venue:       rawMatch.venue,
@@ -312,21 +333,19 @@ async function run() {
     } : null;
     const matchJSON = matchData ? JSON.stringify(matchData) : 'null';
 
-    // Persist everything to GitHub Variables for subsequent runs today
     await setVariable('SCHEDULE_DATE',       today);
     await setVariable('SCHEDULE_SEND_TIME',  fmtTime(sendTime));
     await setVariable('SCHEDULE_HAS_MATCH',  String(hasMatch));
     await setVariable('SCHEDULE_MATCH_DATA', matchJSON);
     await setVariable('SCHEDULE_SENT',       'false');
 
-    console.log('✅ Schedule saved to GitHub Variables. No further API calls needed today.');
-    return; // Don't send yet — let the next run handle it at the right time
-  }
+    console.log('✅ Schedule saved to GitHub Variables.');
 
-  // ── If schedule is still stale outside the check window, skip ────────────
-  if (scheduleIsStale) {
-    console.log('⏩ Schedule is stale but outside the 3am check window. Exiting.');
-    return;
+    // Update locals so the send check below uses fresh values without
+    // needing another round of API reads
+    scheduleSendTime = fmtTime(sendTime);
+    scheduleSent     = 'false';
+    scheduleHasMatch = String(hasMatch);
   }
 
   // ── Already sent today — nothing to do ───────────────────────────────────
@@ -335,35 +354,34 @@ async function run() {
     return;
   }
 
-  // ── Check if we're in the send window ─────────────────────────────────────
-  if (!isWithinWindow(scheduleSendTime)) {
-    console.log(`⏩ Outside send window (send at ${scheduleSendTime}, now ${fmtTime({ hour, minute })}). Exiting.`);
-    return;
-  }
-
-  // ── Send the message ──────────────────────────────────────────────────────
-  console.log(`⏰ Within send window — sending message!`);
-
-  // Use the match data stored at 3am — no API call needed
+  // ── Read match data ───────────────────────────────────────────────────────
   const scheduleMatchData = await getVariable('SCHEDULE_MATCH_DATA');
   const storedMatch = scheduleMatchData && scheduleMatchData !== 'null'
     ? JSON.parse(scheduleMatchData)
     : null;
 
+  const kickoffUTC = storedMatch?.utcDate || null;
+
+  // ── Check send window ─────────────────────────────────────────────────────
+  if (!isWithinWindow(scheduleSendTime, scheduleHasMatch === 'true', kickoffUTC)) {
+    console.log(`⏩ Outside send window (opens at ${scheduleSendTime}, now ${fmtTime({ hour, minute })}). Exiting.`);
+    return;
+  }
+
+  // ── Send the message ──────────────────────────────────────────────────────
+  console.log('⏰ Within send window — sending message!');
+
   if (scheduleHasMatch === 'true') {
     if (storedMatch) {
       await sendMatchReminder(storedMatch, new Date(storedMatch.utcDate));
     } else {
-      // Shouldn't happen, but fall back gracefully if data is missing
       console.log('⚠️  Match data missing from variables. Exiting without sending.');
       return;
     }
   } else {
-    // storedMatch here is the next upcoming fixture for the countdown
     await sendNoMatchMessage(storedMatch);
   }
 
-  // Mark as sent so no further runs today will fire
   await setVariable('SCHEDULE_SENT', 'true');
   console.log('✅ Message sent and marked as sent for today.');
 }
