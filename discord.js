@@ -63,7 +63,7 @@ async function sendMatchReminder(match, kickoffUTC) {
           { name: '🏆 Competition',   value: competition, inline: true  },
           { name: '🏟️ Venue',        value: venue,       inline: true  },
           { name: '📅 Date',         value: dateStr,     inline: false },
-          { name: '⏰ Kickoff (PST)', value: timeStr,     inline: true  },
+          { name: '⏰ Kickoff (PT)',  value: timeStr,     inline: true  },
         ],
         footer: { text: 'Come on you Gunners! 🔴' },
       },
@@ -128,7 +128,7 @@ async function sendNoMatchMessage(nextMatch) {
       { name: '🏆 Competition',    value: competition,           inline: true  },
       { name: '🏟️ Venue',        value: venue,                 inline: true  },
       { name: '📅 Date',           value: kickoffDateStr,        inline: false },
-      { name: '⏰ Kickoff (PST)',   value: kickoffTimeStr,        inline: true  },
+      { name: '⏰ Kickoff (PT)',     value: kickoffTimeStr,        inline: true  },
     ];
   } else {
     // No fixtures found in the next 60 days — very unlikely but handled gracefully

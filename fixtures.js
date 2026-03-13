@@ -57,7 +57,7 @@ async function fetchMatches(dateFrom, dateTo) {
  * }
  */
 async function getUpcomingMatch() {
-  const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+  const today = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Los_Angeles' }); // YYYY-MM-DD
 
   const matches = await fetchMatches(today, today);
 
@@ -78,8 +78,8 @@ async function getNextMatch() {
   const sixtyDaysLater = new Date(today);
   sixtyDaysLater.setDate(today.getDate() + 60);
 
-  const dateFrom = today.toISOString().split('T')[0];
-  const dateTo   = sixtyDaysLater.toISOString().split('T')[0];
+  const dateFrom = today.toLocaleDateString('en-CA', { timeZone: 'America/Los_Angeles' });
+  const dateTo   = sixtyDaysLater.toLocaleDateString('en-CA', { timeZone: 'America/Los_Angeles' });
 
   const matches = await fetchMatches(dateFrom, dateTo);
 
